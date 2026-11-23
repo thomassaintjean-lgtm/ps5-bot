@@ -68,9 +68,18 @@ def envoyer_discord(titre, message, url=None, couleur=0x00B050):
 
 def lire_prix(texte):
     """'649,99 €' / '€649,99' / '899€95' -> 649.99"""
-    texte = re.sub(r"(?<=\d)[\s \xa0.](?=\d{3}\b)", "", texte)  # « 1 299,95 » -> « 1299,95 »
-    m = re.search(r"(\d{2,5})\s*(?:[,.]|€)\s*(\d{2})", texte)
-    return float(f"{m.group(1)}.{m.group(2)}") if m else None
+    if not texte:
+        return None
+    texte = re.sub(r"(?<![\d.,])(\d)[ \u202f\xa0.](?=\d{3}[,.]\d{2})", r"\1", str(texte))  # « 1 299,95 » -> « 1299,95 »
+    for motif in (r"€\s*(\d{1,5})[,.](\d{2})",      # €649,99
+                  r"(\d{1,5})[,.](\d{2})\s*€",      # 649,99 €
+                  r"(\d{2,5})\s*€\s*(\d{2})\b",     # 899€95
+                  r"^\s*(\d{1,5})[,.](\d{2})\s*$"):  # 649.99 (valeur brute)
+        m = re.search(motif, texte)
+        if m:
+            return float(f"{m.group(1)}.{m.group(2)}")
+    m = re.fullmatch(r"\s*(\d{2,5})\s*", texte)
+    return float(m.group(1)) if m else None
 
 
 def modele(nom):
@@ -88,7 +97,10 @@ def modele(nom):
 
 def page_bloquee(page):
     t = page.content().lower()
-    return "access denied" in t or "accès refusé" in t or "captcha" in t
+    titre = (page.title() or "").lower()
+    signes = ("access denied", "accès refusé", "captcha-delivery", "just a moment",
+              "pardon our interruption", "attention required", "vous avez été bloqué")
+    return any(s in t[:20000] for s in signes) or any(s in titre for s in signes)
 
 
 # ------------------------------------------------------------------ SONY
@@ -194,7 +206,46 @@ def offre_enseigne(page, url):
         vendeur = (o.get("seller") or {}).get("name") if isinstance(o.get("seller"), dict) else None
         if prix:
             return ("dispo" if "instock" in stock else "indispo"), prix, vendeur
-    return "inconnu", None, None
+
+    # --- Plan B : pas de données structurées, on lit la page comme un humain
+    prix = None
+    for sel, attr in (("meta[itemprop='price']", "content"),
+                      ("meta[property='product:price:amount']", "content"),
+                      ("meta[property='og:price:amount']", "content"),
+                      ("[itemprop='price']", "content")):
+        try:
+            el = page.query_selector(sel)
+            if el:
+                prix = lire_prix(el.get_attribute(attr) or el.inner_text())
+                if prix:
+                    break
+        except Exception:
+            pass
+    if not prix:
+        try:
+            txt = page.evaluate("""() => {
+                const els = [...document.querySelectorAll('[class*="price" i], [data-testid*="price" i]')]
+                  .filter(e => e.offsetParent !== null && /\\d/.test(e.innerText || ''));
+                return els.length ? els[0].innerText : '';
+            }""")
+            prix = lire_prix(txt)
+        except Exception:
+            pass
+
+    bouton_actif = False
+    boutons = page.get_by_role("button", name=re.compile(r"ajouter au panier", re.I))
+    for i in range(boutons.count()):
+        try:
+            if boutons.nth(i).is_visible() and boutons.nth(i).is_enabled():
+                bouton_actif = True
+                break
+        except Exception:
+            pass
+
+    print(f"   [diag] titre page : {page.title()[:80]!r} | prix lu : {prix} | bouton panier actif : {bouton_actif}")
+    if prix is None and not bouton_actif:
+        return "inconnu", None, None
+    return ("dispo" if bouton_actif else "indispo"), prix, None
 
 
 # ------------------------------------------------------------------ MAIN
