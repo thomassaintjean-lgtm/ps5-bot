@@ -1,0 +1,47 @@
+name: Alerte PS5
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Envoyer un message de test sur Discord"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ps5-bot
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Restaurer l'état précédent
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: ps5-state-${{ github.run_id }}
+          restore-keys: ps5-state-
+      - name: Installer
+        run: |
+          pip install requests playwright
+          python -m playwright install --with-deps chromium
+      - name: Vérifier les stocks
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
+          TEST_NOTIF: ${{ inputs.test && '1' || '0' }}
+        run: python ps5_bot.py
+      - name: Sauvegarder l'état
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: ps5-state-${{ github.run_id }}
